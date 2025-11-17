@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <Servo.h>
+#include <ESP32Servo.h>
 
 // ===== pin =====
 const int IN1 = 26, IN2 = 25, IN3 = 33, IN4 = 32;
@@ -18,10 +18,26 @@ WebServer server(80);
 // ===== 全域變數 =====
 int speedVal = 200;          // 速度v (可利用滑桿調節)
 int turnSensitivity = 50;    // 轉向靈敏度
-int armSpeedVal = 30;        // 手臂速度
+int armSpeedVal =15;        // 手臂速度
 int currentPWM = 0;          // 用於平滑停止
 char activeCmd = 'S';        // 當前運動方向
 bool moving = false;         // 是否正在移動
+// 手臂漸進控制狀態
+int armLeftAngle = 90;
+int armRightAngle = 90;
+bool armMoving = false;      // 手臂是否在移動
+int armMoveDir = 0;          // +1 上升, -1 下降, 0 停
+unsigned long lastArmMoveMillis = 0;
+
+// 爪子漸進控制狀態
+int clawAngle = 90;          // 爪子當前角度
+bool clawMoving = false;     // 爪子是否在移動
+int clawMoveDir = 0;         // +1 張開, -1 夾緊, 0 停
+unsigned long lastClawMoveMillis = 0;
+
+// 翻箱子開關狀態
+bool flipBoxState = false;   // false=原位(90度), true=翻轉(160度)
+
 
 // ===== 馬達控制函式 =====
 void setMotor(char dir, int v) {
@@ -71,16 +87,9 @@ void smoothStop() {
 // ===== 伺服控制 =====
 void openClaw() { claw.write(120); }
 void closeClaw() { claw.write(60); }
-void liftArm() { 
-  int speed = map(armSpeedVal, 5, 80, 10, 180);
-  armLeft.write(60); 
-  armRight.write(120); 
-}
-void lowerArm() { 
-  int speed = map(armSpeedVal, 5, 80, 10, 180);
-  armLeft.write(120); 
-  armRight.write(60); 
-}
+// 傳統一次性升降（保留以備）
+void liftArm() { armLeft.write(60); armRight.write(120); }
+void lowerArm() { armLeft.write(120); armRight.write(60); }
 void flipBoxForward() { flipBox.write(160); }
 void flipBoxHome() { flipBox.write(90); }
 
@@ -104,18 +113,41 @@ void handleCmd(char c, bool pressed, int speed = 0, int sensitivity = 0) {
 }
 
 void handleAction(char c) {
+  // 保留舊的單次動作支援
   switch (c) {
-    case 'U': liftArm(); break;
-    case 'D': lowerArm(); break;
+    case 'X': 
+      // 翻箱子開關邏輯
+      flipBoxState = !flipBoxState;
+      if (flipBoxState) {
+        flipBox.write(170);  // 翻轉
+        Serial.println("翻箱子: 翻轉到160度");
+      } else {
+        flipBox.write(20);   // 回原位
+        Serial.println("翻箱子: 回到原位90度");
+      }
+      break;
+    case 'H': 
+      flipBoxHome(); 
+      flipBoxState = false;  // 重置狀態
+      Serial.println("翻箱子: 強制回到原位");
+      break;
+    case 'S': 
+      stopCar(); 
+      moving = false; 
+      // 停止所有漸進動作
+      armMoving = false;
+      armMoveDir = 0;
+      clawMoving = false;
+      clawMoveDir = 0;
+      Serial.println("全部停止");
+      break;
+    // O/C/U/D 已改為支援長按，此處保留單擊行為（向後兼容）
     case 'O': openClaw(); break;
     case 'C': closeClaw(); break;
-    case 'X': flipBoxForward(); break;
-    case 'H': flipBoxHome(); break;
-    case 'S': stopCar(); moving = false; break;
+    case 'U': liftArm(); break;
+    case 'D': lowerArm(); break;
   }
-}
-
-// ===== HTML介面 =====
+}// ===== HTML介面 =====
 const char* HTML_PAGE = R"rawliteral(
 <!DOCTYPE html>
 <html lang="zh-TW">
@@ -427,7 +459,7 @@ button:hover::before {
 </head>
 <body>
 <div class="container">
-    <h1>🚗 Arduino 遙控車</h1>
+    <h1>第四組 Arduino 遙控端</h1>
     
     <div class="control-section">
         <div class="section-title">🎮 方向控制</div>
@@ -458,19 +490,19 @@ button:hover::before {
     <div class="control-section">
         <div class="section-title">🦾 機械手臂</div>
         <div class="arm-grid">
-            <button class="arm-btn" onclick="sendAct('U')">
+            <button class="arm-btn" onmousedown="sendActPress('U',1)" onmouseup="sendActPress('U',0)" ontouchstart="sendActPress('U',1)" ontouchend="sendActPress('U',0)">
                 <div>⬆️</div>
                 <div>手臂上升</div>
             </button>
-            <button class="arm-btn" onclick="sendAct('D')">
+            <button class="arm-btn" onmousedown="sendActPress('D',1)" onmouseup="sendActPress('D',0)" ontouchstart="sendActPress('D',1)" ontouchend="sendActPress('D',0)">
                 <div>⬇️</div>
                 <div>手臂下降</div>
             </button>
-            <button class="arm-btn" onclick="sendAct('O')">
+            <button class="arm-btn" onmousedown="sendActPress('O',1)" onmouseup="sendActPress('O',0)" ontouchstart="sendActPress('O',1)" ontouchend="sendActPress('O',0)">
                 <div>✋</div>
                 <div>張開</div>
             </button>
-            <button class="arm-btn" onclick="sendAct('C')">
+            <button class="arm-btn" onmousedown="sendActPress('C',1)" onmouseup="sendActPress('C',0)" ontouchstart="sendActPress('C',1)" ontouchend="sendActPress('C',0)">
                 <div>✊</div>
                 <div>夾緊</div>
             </button>
@@ -593,13 +625,8 @@ async function sendAct(command) {
         statusElement.innerHTML = `執行: ${getCommandName(command)} ⏳`;
         statusElement.style.color = '#ff9800';
         
-        // 手臂動作加入速度參數
-        let url = `/act?c=${command}`;
-        if (command === 'U' || command === 'D') {
-            url += `&a=${armSpeed}`;
-        }
-        
-        const response = await fetch(url);
+    // 非長按動作仍呼叫 /act?c=...
+    const response = await fetch(`/act?c=${command}`);
         
         if (response.ok) {
             statusElement.innerHTML = `✅ 已執行: ${getCommandName(command)}`;
@@ -618,6 +645,30 @@ async function sendAct(command) {
         }, 2000);
         
     } catch (error) {
+        statusElement.innerHTML = '❌ 連線錯誤，請檢查設備';
+        statusElement.style.color = '#f44336';
+        isConnected = false;
+    }
+}
+
+// 長按手臂控制：發送 p(pressed) 與 a(arm speed)
+async function sendActPress(command, pressed) {
+    const statusElement = document.getElementById('status');
+    try {
+        const a = document.getElementById('arm-slider').value;
+        const url = `/act?c=${command}&p=${pressed?1:0}&a=${a}`;
+        const response = await fetch(url);
+        if (response.ok) {
+            if (pressed) {
+                statusElement.innerHTML = `手臂 ${getCommandName(command)} 按住中`;
+                statusElement.style.color = '#2196f3';
+            } else {
+                statusElement.innerHTML = `手臂 停止`;
+                statusElement.style.color = '#ff9800';
+                setTimeout(()=>{ if (isConnected) statusElement.innerHTML='準備就緒 🟢'; },1000);
+            }
+        }
+    } catch (e) {
         statusElement.innerHTML = '❌ 連線錯誤，請檢查設備';
         statusElement.style.color = '#f44336';
         isConnected = false;
@@ -830,20 +881,74 @@ void handleMove() {
 }
 
 void handleAct() {
-  if (!server.hasArg("c")) {
-    server.send(400, "text/plain", "missing c");
-    return;
+    if (!server.hasArg("c")) {
+        server.send(400, "text/plain", "missing c");
+        return;
+    }
+
+    char c = server.arg("c")[0];
+
+    // 讀取按下狀態 p=1 或 p=0（可選）
+    bool pressed = false;
+    if (server.hasArg("p")) pressed = server.arg("p").toInt() == 1;
+
+    // 如果有手臂速度參數，更新armSpeedVal
+    if (server.hasArg("a")) {
+        armSpeedVal = server.arg("a").toInt();
+    }
+
+    // 調試信息：顯示收到的參數
+    Serial.print("handleAct: c=");
+    Serial.print(c);
+    if (server.hasArg("p")) {
+        Serial.print(", p=");
+        Serial.print(pressed ? "1" : "0");
+    }
+    if (server.hasArg("a")) {
+        Serial.print(", a=");
+        Serial.print(armSpeedVal);
+    }
+    Serial.println();
+
+  // 處理手臂長按行為（U/D）- 只有當有p參數時才進入漸進控制
+  if ((c == 'U' || c == 'D') && server.hasArg("p")) {
+    if (pressed) {
+      armMoving = true;
+      armMoveDir = (c == 'U') ? +1 : -1;
+      lastArmMoveMillis = millis();
+      Serial.println("手臂開始" + String(c == 'U' ? "上升" : "下降") + " (漸進模式)");
+      server.send(200, "text/plain", "OK");
+      return;
+    } else {
+      // 放開停止
+      armMoving = false;
+      armMoveDir = 0;
+      Serial.println("手臂停止");
+      server.send(200, "text/plain", "OK");
+      return;
+    }
   }
-  
-  char c = server.arg("c")[0];
-  
-  // 如果有手臂速度參數，更新armSpeedVal
-  if (server.hasArg("a")) {
-    armSpeedVal = server.arg("a").toInt();
-  }
-  
-  handleAction(c);
-  server.send(200, "text/plain", "OK");
+
+  // 處理爪子長按行為（O/C）- 只有當有p參數時才進入漸進控制
+  if ((c == 'O' || c == 'C') && server.hasArg("p")) {
+    if (pressed) {
+      clawMoving = true;
+      clawMoveDir = (c == 'O') ? +1 : -1;  // O=張開(+), C=夾緊(-)
+      lastClawMoveMillis = millis();
+      Serial.println("爪子開始" + String(c == 'O' ? "張開" : "夾緊") + " (漸進模式)");
+      server.send(200, "text/plain", "OK");
+      return;
+    } else {
+      // 放開停止
+      clawMoving = false;
+      clawMoveDir = 0;
+      Serial.println("爪子停止");
+      server.send(200, "text/plain", "OK");
+      return;
+    }
+  }    // 其他動作仍然使用原先處理
+    handleAction(c);
+    server.send(200, "text/plain", "OK");
 }
 
 void handleConfig() {
@@ -885,11 +990,15 @@ void setup() {
   claw.attach(SERVO_CLAW);
   flipBox.attach(SERVO_FLIP_BOX);
   
-  // 初始化伺服馬達位置
-  armLeft.write(90); 
-  armRight.write(90); 
-  claw.write(90); 
+  // 初始化伺服馬達位置和狀態變數
+  armLeftAngle = 90;
+  armRightAngle = 90;
+  clawAngle = 90;
+  armLeft.write(armLeftAngle); 
+  armRight.write(armRightAngle); 
+  claw.write(clawAngle); 
   flipBox.write(90);
+  flipBoxState = false;
 
   WiFi.softAP("ESP32-Car", "88888888");
   Serial.print("AP IP: "); 
@@ -904,10 +1013,13 @@ void setup() {
   Serial.println("Web server ready.");
   Serial.println("====================================");
   Serial.println("🚗 Arduino 遙控車控制台已啟動");
+  Serial.println("✅ 支援漸進式手臂升降控制");
+  Serial.println("✅ 支援漸進式爪子開合控制");
+  Serial.println("✅ 支援翻箱子開關模式");
   Serial.println("====================================");
   Serial.print("WiFi 熱點名稱: ESP32-Car");
   Serial.println("  密碼: 88888888");
-  Serial.print("控制網頁: http://");
+  Serial.print("控制網頁: http://192.168.4.1");
   Serial.println(WiFi.softAPIP());
   Serial.println("====================================");
 }
@@ -916,4 +1028,48 @@ void setup() {
 void loop() {
   server.handleClient();
   smoothStop();  // 每回圈檢查是否需要減速
+    // 手臂漸進控制：按住時逐步改變角度
+    if (armMoving && armMoveDir != 0) {
+        unsigned long now = millis();
+        // 移動頻率取決於 armSpeedVal（值越大越快）
+        // 因為每次變化30度，所以延遲時間調整得更長一些
+        // 假設 armSpeedVal 範圍 5..80，將對應到 delay 100..500 ms
+        int delayMs = map(constrain(armSpeedVal, 5, 80), 5, 80, 500, 100);
+        if (now - lastArmMoveMillis >= (unsigned long)delayMs) {
+            lastArmMoveMillis = now;
+            // 每次改變角度幅度改為30度，移動更明顯
+            armLeftAngle += armMoveDir * 30;
+            armRightAngle -= armMoveDir * 30; // 反向
+            // 限制角度範圍（假設 20..160 安全範圍）
+            armLeftAngle = constrain(armLeftAngle, 20, 160);
+            armRightAngle = constrain(armRightAngle, 20, 160);
+            armLeft.write(armLeftAngle);
+            armRight.write(armRightAngle);
+        }
+    }
+
+    // 爪子漸進控制：按住時逐步改變角度
+    if (clawMoving && clawMoveDir != 0) {
+        unsigned long now = millis();
+        // 爪子使用相同的速度控制，因為每次變化30度所以延遲更長
+        int delayMs = map(constrain(armSpeedVal, 5, 80), 5, 80, 500, 100);
+        if (now - lastClawMoveMillis >= (unsigned long)delayMs) {
+            lastClawMoveMillis = now;
+            // 爪子角度變化：張開(+)朝向120度，夾緊(-)朝向60度，每次變化30度
+            int oldAngle = clawAngle;
+            clawAngle += clawMoveDir * 30;
+            // 限制爪子角度範圍（60度夾緊，120度張開）
+            clawAngle = constrain(clawAngle, 95, 140);
+            claw.write(clawAngle);
+            
+            // 調試信息：顯示角度變化
+            // Serial.print("爪子移動: ");
+            // Serial.print(oldAngle);
+            // Serial.print(" -> ");
+            // Serial.print(clawAngle);
+            // Serial.print("度 (方向: ");
+            // Serial.print(clawMoveDir > 0 ? "張開" : "夾緊");
+            // Serial.println(")");
+        }
+    }
 }
