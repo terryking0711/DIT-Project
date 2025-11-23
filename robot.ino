@@ -3,6 +3,46 @@
 #include <WebServer.h>
 #include <ESP32Servo.h>
 
+/*
+#include <FastLED.h>
+
+#define NUM_LEDS 60
+#define DATA_PIN 23
+CRGB leds[NUM_LEDS];
+
+// 彈跳參數
+int position = 0;
+int direction = 1;
+uint8_t hue = 0;
+
+void setup() {
+  FastLED.addLeds<WS2812, DATA_PIN, GRB>(leds, NUM_LEDS);
+}
+
+
+void loop() {
+
+ 
+  // ===== 5. 彈跳球 =====
+  position = 0;
+  direction = 1;
+  hue = 0;
+  for(int step=0; step<300; step++){
+    fadeToBlackBy(leds, NUM_LEDS, 40);
+    leds[position] = CHSV(hue, 255, 255);
+    hue++;
+    FastLED.show();
+    delay(30);
+    position += direction;
+    if (position == NUM_LEDS - 1 || position == 0) {
+      direction = -direction;
+    }
+  }
+
+}
+*/
+
+
 // ===== pin =====
 const int IN1 = 26, IN2 = 25, IN3 = 33, IN4 = 32;
 const int ENA = 27, ENB = 14;
@@ -117,7 +157,7 @@ void handleAction(char c) {
       // 翻箱子開關邏輯
       flipBoxState = !flipBoxState;
       if (flipBoxState) {
-        flipBox.write(170);  // 翻轉
+        flipBox.write(150);  // 翻轉
         Serial.println("翻箱子: 翻轉到160度");
       } else {
         flipBox.write(20);   // 回原位
@@ -975,11 +1015,11 @@ void setup() {
   pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
   pinMode(ENA, OUTPUT); pinMode(ENB, OUTPUT);
-
+  
   claw1.attach(SERVO_CLAW_1);
   claw2.attach(SERVO_CLAW_2);
   flipBox.attach(SERVO_FLIP_BOX);
-  
+
   // 初始化伺服馬達位置和狀態變數
   claw1Angle = 90;
   claw2Angle = 90;
@@ -1015,7 +1055,6 @@ void setup() {
 void loop() {
   server.handleClient();
   smoothStop();  // 每回圈檢查是否需要減速
-  
   // 爪子1漸進控制：按住時逐步改變角度
   if (claw1Moving && claw1MoveDir != 0) {
     unsigned long now = millis();
@@ -1024,9 +1063,9 @@ void loop() {
     if (now - lastClaw1MoveMillis >= (unsigned long)delayMs) {
       lastClaw1MoveMillis = now;
       // 爪子角度變化：張開(+)朝向120度，夾緊(-)朝向60度，每次變化10度
-      claw1Angle += claw1MoveDir * 30;
+      claw1Angle += claw1MoveDir * 15;
       // 限制爪子角度範圍（60度夾緊，120度張開）
-      claw1Angle = constrain(claw1Angle, 95, 155);
+      claw1Angle = constrain(claw1Angle, 95, 125);
       claw1.write(claw1Angle);
     }
   }
@@ -1041,8 +1080,9 @@ void loop() {
       // 爪子角度變化：張開(+)朝向120度，夾緊(-)朝向60度，每次變化10度
       claw2Angle += claw2MoveDir * 15;
       // 限制爪子角度範圍（60度夾緊，120度張開）
-      claw2Angle = constrain(claw2Angle, 110, 140);
+      claw2Angle = constrain(claw2Angle, 40, 70);
       claw2.write(claw2Angle);
     }
   }
+
 }
